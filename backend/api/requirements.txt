@@ -1,7 +1,6 @@
 fastapi
 uvicorn
 google-generativeai
-scikit-learn
 joblib
 requests
-scipy
+python-dotenv
