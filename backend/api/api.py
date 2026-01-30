@@ -5,7 +5,7 @@ import pandas as pd
 from google import genai
 from fastapi import FastAPI, HTTPException, Request  
 from pydantic import BaseModel
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.cors import CORSMiddleware #
 
 # -----------------------------------
 # CONFIG APP
@@ -16,13 +16,15 @@ app = FastAPI(
     version="2.0"
 )
 
-@app.middleware("http")
-async def add_cors_headers(request: Request, call_next):
-    response = await call_next(request)
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "*"
-    return response
+# RECOMENDACIÓN: Usa el middleware oficial de FastAPI en lugar del manual.
+# Esto responde correctamente a los navegadores cuando preguntan por permisos (OPTIONS).
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], 
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # -----------------------------------
 # CONFIGURACIÓN DE PROCESAMIENTO
@@ -33,14 +35,14 @@ STOPWORDS_ES = {
     "me", "te", "se", "mi", "mis", "tu", "tus",
     "es", "esta", "está", "estoy", "son", "era",
     "muy", "ya", "pero", "si"
-}
+} #
 
 PALABRAS_CLAVE = {
     "frustra", "frustrado", "frustrante", "lento", "lenta", "malo", "mala",
     "peor", "basura", "horrible", "terrible", "odio", "fallo", "error",
     "excelente", "bueno", "buena", "genial", "increible", "amo", "encanta",
     "gracias", "mejor", "perfecto", "no", "nunca", "jamas"
-}
+} #
 
 def limpiar_texto(texto: str) -> str:
     texto = texto.lower()
@@ -51,22 +53,20 @@ def limpiar_texto(texto: str) -> str:
         p for p in palabras 
         if (p not in STOPWORDS_ES or p in PALABRAS_CLAVE) and (len(p) > 2 or p == "no")
     ]
-    return " ".join(palabras_limpias)
+    return " ".join(palabras_limpias) #
 
 # -----------------------------------
 # CARGA DE MODELO Y IA
 # -----------------------------------
-# SEGURIDAD: Se obtiene solo de variables de entorno en producción
-GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
+GEMINI_KEY = os.environ.get("GEMINI_API_KEY") #
 client = genai.Client(api_key=GEMINI_KEY) if GEMINI_KEY else None
 
-# Ruta robusta para Vercel
 BASE_PATH = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(BASE_PATH, "models")
 
 try:
-    modelo_sentimientos = joblib.load(os.path.join(MODEL_PATH, "sentiment_model.pkl"))
-    vectorizer = joblib.load(os.path.join(MODEL_PATH, "tfidf_vectorizer.pkl"))
+    modelo_sentimientos = joblib.load(os.path.join(MODEL_PATH, "sentiment_model.pkl")) #
+    vectorizer = joblib.load(os.path.join(MODEL_PATH, "tfidf_vectorizer.pkl")) #
     print("Modelo y Vectorizador cargados con éxito")
 except Exception as e:
     print(f"Error crítico al cargar modelos: {e}")
@@ -91,10 +91,8 @@ async def predict(data: TextoEntrada):
     if client is None:
         raise HTTPException(status_code=500, detail="Configuración de IA faltante.")
 
-    # 1. Preprocesamiento
     texto_limpio = limpiar_texto(data.text)
     
-    # 2. Predicción de ML
     try:
         texto_tfidf = vectorizer.transform([texto_limpio])
         prediccion = modelo_sentimientos.predict(texto_tfidf)[0]
@@ -106,15 +104,11 @@ async def predict(data: TextoEntrada):
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Error en predicción: {e}")
 
-    # 3. Generar mensaje con Gemini
     prompt = f"""
     Actúa como un asistente juvenil, cercano y empático.
     El usuario escribió: "{data.text}"
     El modelo detectó un sentimiento: {prediccion}.
-
-    Genera una respuesta muy breve (máximo 2 frases) que sea coherente con lo que el usuario expresó:
-    - Si es negativo, ofrece apoyo y di que estamos trabajando para mejorar.
-    - Si es positivo, agradece con entusiasmo.
+    Genera una respuesta muy breve (máximo 2 frases) que sea coherente con lo que el usuario expresó.
     Usa emojis.
     """
 
