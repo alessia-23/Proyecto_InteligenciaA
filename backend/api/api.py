@@ -3,7 +3,7 @@ import re
 import joblib
 import pandas as pd
 from google import genai
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request  
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -16,13 +16,13 @@ app = FastAPI(
     version="2.0"
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+@app.middleware("http")
+async def add_cors_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    return response
 
 # -----------------------------------
 # CONFIGURACIÓN DE PROCESAMIENTO
