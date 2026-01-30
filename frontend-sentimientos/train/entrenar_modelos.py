@@ -42,20 +42,29 @@ X_train, X_test, y_train, y_test = train_test_split(
 )
 
 # -----------------------------------
-# 4. Vectorización TF-IDF
+# 4. Vectorización TF-IDF (MEJORADA)
 # -----------------------------------
+# Añadimos ngram_range=(1, 2) para capturar frases de dos palabras
+# Añadimos stop_words para eliminar palabras ruidosas
 vectorizer = TfidfVectorizer(
     lowercase=True,
-    max_features=5000
+    max_features=5000,
+    ngram_range=(1, 2),  # <--- CRUCIAL: Captura "no me", "muy lenta", "es horrible"
+    strip_accents='unicode'
 )
 
 X_train_tfidf = vectorizer.fit_transform(X_train)
 X_test_tfidf = vectorizer.transform(X_test)
 
 # -----------------------------------
-# 5. Entrenamiento del modelo
+# 5. Entrenamiento del modelo (AJUSTADO)
 # -----------------------------------
-modelo_sentimientos = LogisticRegression(max_iter=1000, random_state=42)
+# Usamos class_weight='balanced' por si tienes más ejemplos de uno que de otro
+modelo_sentimientos = LogisticRegression(
+    max_iter=1000, 
+    random_state=42,
+    class_weight='balanced' 
+)
 modelo_sentimientos.fit(X_train_tfidf, y_train)
 
 # -----------------------------------

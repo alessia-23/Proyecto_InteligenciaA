@@ -32,14 +32,33 @@ class ModelState:
 state = ModelState()
 
 # IDs de Google Drive directos
-URL_MODELO = "https://drive.google.com/uc?export=download&id=1x-TAd6dRvc3oQgfya6bx1D4FWWWniGME"
-URL_VECTORIZER = "https://drive.google.com/uc?export=download&id=1vz7i9jK7l1aO4da3pbcesIkVRvHjr0Gl"
+URL_MODELO = "https://drive.google.com/uc?export=download&id=1dgL6VqbuTcIsSW-Co5Y2v_BxdDYkQOS7"
+URL_VECTORIZER = "https://drive.google.com/uc?export=download&id=1lGMt17wNkflyzKnDbwVOmSxUGyCnBP7j"
 
 def limpiar_texto(texto: str) -> str:
+    # 1. Minúsculas y limpieza básica
     texto = texto.lower()
-    # Mantenemos solo letras y espacios para reducir dimensiones
-    texto = re.sub(r"[^a-záéíóúñ\s]", "", texto)
-    return texto.strip()
+    
+    # 2. Remover acentos para normalizar (ej: 'gustó' -> 'gusto')
+    import unicodedata
+    texto = ''.join(c for c in unicodedata.normalize('NFD', texto)
+        if unicodedata.category(c) != 'Mn')
+
+    # 3. Mantener solo letras
+    texto = re.sub(r"[^a-zñ\s]", "", texto)
+
+    # 4. Lista de palabras ruidosas (Stop Words)
+    # Eliminamos artículos, preposiciones y pronombres que no aportan sentimiento
+    stop_words = {
+        'el', 'la', 'los', 'las', 'un', 'una', 'unos', 'unas', 'de', 'del', 
+        'a', 'ante', 'con', 'por', 'para', 'su', 'sus', 'tu', 'tus', 'esto', 
+        'esta', 'este', 'ese', 'esa', 'estos', 'estas', 'que', 'en', 'y'
+    }
+    
+    palabras = texto.split()
+    palabras_limpias = [p for p in palabras if p not in stop_words]
+    
+    return " ".join(palabras_limpias).strip()
 
 def cargar_modelos():
     """Carga los modelos solo cuando se hace la primera petición (ahorra RAM al inicio)"""
@@ -71,53 +90,64 @@ def home():
 
 @app.post("/predict")
 async def predict(data: TextoEntrada):
-    # 1. Validación de API Key
+    # 1. Validación de API Key y Carga de modelos (se mantiene igual)
     api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        raise HTTPException(status_code=500, detail="Configura GEMINI_API_KEY en Vercel")
-
-    # 2. Carga perezosa (Lazy Load)
     try:
         cargar_modelos()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    # 3. Predicción con tu modelo entrenado
+    # 3. Predicción con Lógica de Calibración (IGUAL A TU ENTRENAMIENTO)
     try:
         texto_limpio = limpiar_texto(data.text)
         tfidf = state.vectorizer.transform([texto_limpio])
-        pred = state.modelo_sentimientos.predict(tfidf)[0]
         
-        # Intentar obtener probabilidad si el modelo lo permite
-        confianza = 0.0
-        if hasattr(state.modelo_sentimientos, "predict_proba"):
-            prob = state.modelo_sentimientos.predict_proba(tfidf)[0]
-            confianza = float(max(prob))
+        # Obtenemos las probabilidades
+        prob = state.modelo_sentimientos.predict_proba(tfidf)[0]
+        clases = state.modelo_sentimientos.classes_
+        
+        # Buscamos el índice de la clase positiva (ajusta si tu CSV usa '1' o 'pos')
+        idx_pos = list(clases).index("positive") if "positive" in clases else 1
+        prob_positive_percent = prob[idx_pos] * 100
+
+        # Aplicamos tu lógica de rangos
+        if prob_positive_percent > 52.5:
+            pred_final = "positive"
+        elif prob_positive_percent < 47.5:
+            pred_final = "negative"
+        else:
+            pred_final = "neutral"
+            
+        confianza = float(max(prob))
     except Exception as e:
         print(f"Fallo en predicción ML: {e}")
-        pred = "indeterminado"
+        pred_final = "Indeterminado"
         confianza = 0.0
 
-    # 4. Respuesta creativa con Gemini
+    # 4. Respuesta con Gemini (Prompt reforzado)
     try:
         client = genai.Client(api_key=api_key)
+        
+        # Le decimos a Gemini que NO ignore nuestra predicción
         prompt = (
-            f"Actúa como un amigo empático y buena onda. "
+            f"Contexto: Eres un amigo empático. Un sistema de IA analizó el mensaje del usuario "
+            f"y determinó que el sentimiento es: {pred_final}. "
             f"El usuario dijo: '{data.text}'. "
-            f"El sistema detectó que se siente: {pred}. "
-            "Responde en una sola frase muy corta con emojis que valide su emoción."
+            f"Tu tarea: Responde al usuario en una sola frase corta con emojis que coincida que esa minimo de 3 frases "
+            f"estrictamente con el sentimiento '{pred_final}' detectado."
         )
         
         response = client.models.generate_content(
             model="gemini-2.0-flash", 
             contents=prompt
         )
-        mensaje = response.text.strip()
+        mensaje = response.text.strip() if response.text else "¡Te entiendo! ✨"
+        
     except Exception as e:
         mensaje = "¡Te entiendo perfectamente! Aquí estoy para ti. ✨"
 
     return {
-        "sentimiento": str(pred),
+        "sentimiento": pred_final,
         "confianza": round(confianza, 2),
         "mensaje_gemini": mensaje
     }
