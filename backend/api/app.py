@@ -1,5 +1,7 @@
 import os
 import re
+import requests
+from io import BytesIO
 import joblib
 from google import genai
 from fastapi import FastAPI, HTTPException
@@ -43,22 +45,32 @@ def limpiar_texto(texto: str) -> str:
     return " ".join(palabras_limpias)
 
 # -----------------------------
-# CARGA MODELO Y GEMINI
+# CARGA MODELOS DESDE GOOGLE DRIVE
+# -----------------------------
+# Reemplaza estos IDs con los tuyos
+URL_MODELO_SENTIMIENTOS = "https://drive.google.com/uc?export=download&id=1x-TAd6dRvc3oQgfya6bx1D4FWWWniGME"
+URL_VECTORIZER = "https://drive.google.com/uc?export=download&id=1vz7i9jK7l1aO4da3pbcesIkVRvHjr0Gl"
+
+try:
+    # Descargar modelo
+    r_model = requests.get(URL_MODELO_SENTIMIENTOS)
+    modelo_sentimientos = joblib.load(BytesIO(r_model.content))
+
+    # Descargar vectorizador
+    r_vect = requests.get(URL_VECTORIZER)
+    vectorizer = joblib.load(BytesIO(r_vect.content))
+
+    print("Modelo y Vectorizador cargados desde Google Drive con éxito")
+except Exception as e:
+    print(f"Error al cargar modelos desde Drive: {e}")
+    modelo_sentimientos = None
+    vectorizer = None
+
+# -----------------------------
+# GEMINI AI
 # -----------------------------
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 client = genai.Client(api_key=GEMINI_KEY) if GEMINI_KEY else None
-
-BASE_PATH = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_PATH, "models")
-
-try:
-    modelo_sentimientos = joblib.load(os.path.join(MODEL_PATH, "sentiment_model.pkl"))
-    vectorizer = joblib.load(os.path.join(MODEL_PATH, "tfidf_vectorizer.pkl"))
-    print("Modelo y Vectorizador cargados con éxito")
-except Exception as e:
-    print(f"Error al cargar modelos: {e}")
-    modelo_sentimientos = None
-    vectorizer = None
 
 # -----------------------------
 # ESQUEMAS
