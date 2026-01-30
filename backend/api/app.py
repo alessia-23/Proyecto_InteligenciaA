@@ -1,134 +1,132 @@
 import os
 import re
 import requests
-from io import BytesIO
 import joblib
-from google import genai
+from io import BytesIO
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware # <--- ESTO FALTABA
 from pydantic import BaseModel
+from google import genai
+load_dotenv()
+print(f"La clave cargada empieza con: {os.environ.get('GEMINI_API_KEY')[:5]}...")
+app = FastAPI()
 
-# -----------------------------
-# CONFIGURACIÓN APP
-# -----------------------------
-app = FastAPI(
-    title="API Sentimientos Pro v2",
-    description="ML (Logistic Regression) + Gemini AI Contextual",
-    version="2.0"
+# Configuración de CORS
+origins = [
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "https://tu-frontend.vercel.app",
+    "*" # Permite acceso total mientras testeas
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# -----------------------------
-# STOPWORDS Y PALABRAS CLAVE
-# -----------------------------
-STOPWORDS_ES = {
-    "el", "la", "los", "las", "un", "una", "unos", "unas",
-    "y", "o", "de", "del", "al", "a", "en", "por", "para",
-    "me", "te", "se", "mi", "mis", "tu", "tus",
-    "es", "esta", "está", "estoy", "son", "era",
-    "muy", "ya", "pero", "si"
-}
+# --- RECURSOS GLOBALES ---
+# Usamos una clase simple para mantener el estado del modelo en memoria caché
+class ModelState:
+    modelo_sentimientos = None
+    vectorizer = None
 
-PALABRAS_CLAVE = {
-    "frustra", "frustrado", "frustrante", "lento", "lenta", "malo", "mala",
-    "peor", "basura", "horrible", "terrible", "odio", "fallo", "error",
-    "excelente", "bueno", "buena", "genial", "increible", "amo", "encanta",
-    "gracias", "mejor", "perfecto", "no", "nunca", "jamas"
-}
+state = ModelState()
+
+# IDs de Google Drive
+URL_MODELO = "https://drive.google.com/uc?export=download&id=1x-TAd6dRvc3oQgfya6bx1D4FWWWniGME"
+URL_VECTORIZER = "https://drive.google.com/uc?export=download&id=1vz7i9jK7l1aO4da3pbcesIkVRvHjr0Gl"
+
+# --- UTILIDADES ---
+STOPWORDS_ES = {"el", "la", "los", "las", "un", "una", "y", "o", "de", "en", "por", "a"}
+PALABRAS_CLAVE = {"no", "lento", "malo", "excelente", "bueno", "error", "fallo"}
 
 def limpiar_texto(texto: str) -> str:
     texto = texto.lower()
     texto = re.sub(r"[^\w\s]", " ", texto)
     palabras = texto.split()
-    palabras_limpias = [
-        p for p in palabras 
-        if (p not in STOPWORDS_ES or p in PALABRAS_CLAVE) and (len(p) > 2 or p == "no")
-    ]
-    return " ".join(palabras_limpias)
+    return " ".join([p for p in palabras if (p not in STOPWORDS_ES or p in PALABRAS_CLAVE)])
 
-# -----------------------------
-# CARGA MODELOS DESDE GOOGLE DRIVE
-# -----------------------------
-# Reemplaza estos IDs con los tuyos
-URL_MODELO_SENTIMIENTOS = "https://drive.google.com/uc?export=download&id=1x-TAd6dRvc3oQgfya6bx1D4FWWWniGME"
-URL_VECTORIZER = "https://drive.google.com/uc?export=download&id=1vz7i9jK7l1aO4da3pbcesIkVRvHjr0Gl"
+def cargar_modelos_si_no_existen():
+    if state.modelo_sentimientos is None or state.vectorizer is None:
+        try:
+            session = requests.Session()
+            def download_drive_file(url):
+                response = session.get(url, stream=True, timeout=20)
+                # Si Google pide confirmación de virus, extraemos el token
+                token = None
+                for key, value in response.cookies.items():
+                    if key.startswith('download_warning'):
+                        token = value
+                if token:
+                    response = session.get(url, params={'confirm': token}, stream=True)
+                return response.content
 
-try:
-    # Descargar modelo
-    r_model = requests.get(URL_MODELO_SENTIMIENTOS)
-    modelo_sentimientos = joblib.load(BytesIO(r_model.content))
-
-    # Descargar vectorizador
-    r_vect = requests.get(URL_VECTORIZER)
-    vectorizer = joblib.load(BytesIO(r_vect.content))
-
-    print("Modelo y Vectorizador cargados desde Google Drive con éxito")
-except Exception as e:
-    print(f"Error al cargar modelos desde Drive: {e}")
-    modelo_sentimientos = None
-    vectorizer = None
-
-# -----------------------------
-# GEMINI AI
-# -----------------------------
-GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
-client = genai.Client(api_key=GEMINI_KEY) if GEMINI_KEY else None
-
-# -----------------------------
-# ESQUEMAS
-# -----------------------------
+            print("Descargando modelos...")
+            content_m = download_drive_file(URL_MODELO)
+            state.modelo_sentimientos = joblib.load(BytesIO(content_m))
+            
+            content_v = download_drive_file(URL_VECTORIZER)
+            state.vectorizer = joblib.load(BytesIO(content_v))
+            print("Modelos cargados.")
+        except Exception as e:
+            # Esto te dirá exactamente qué falló en los logs
+            print(f"ERROR CARGANDO MODELOS: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Carga fallida: {str(e)}")
+# --- ENDPOINTS ---
 class TextoEntrada(BaseModel):
     text: str
 
-# -----------------------------
-# ENDPOINTS
-# -----------------------------
 @app.get("/")
-async def root():
-    return {"message": "API de Sentimientos Operativa"}
+def home():
+    return {"status": "ok", "message": "API de Sentimientos Operativa"}
 
 @app.post("/predict")
 async def predict(data: TextoEntrada):
-    if modelo_sentimientos is None or vectorizer is None:
-        raise HTTPException(status_code=500, detail="El modelo no está disponible.")
+    # 1. Verificar API Key
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="Falta GEMINI_API_KEY en variables de entorno.")
 
-    if client is None:
-        raise HTTPException(status_code=500, detail="Configuración de IA faltante.")
+    # 2. Cargar modelos (solo si no están en memoria)
+    cargar_modelos_si_no_existen()
 
-    texto_limpio = limpiar_texto(data.text)
-
-    # Predicción ML
+    # 3. Preprocesamiento y Predicción ML
     try:
-        texto_tfidf = vectorizer.transform([texto_limpio])
-        prediccion = modelo_sentimientos.predict(texto_tfidf)[0]
-        probas = modelo_sentimientos.predict_proba(texto_tfidf)[0]
-        clases = modelo_sentimientos.classes_
-        idx_pred = list(clases).index(prediccion)
-        confianza = probas[idx_pred]
+        texto_limpio = limpiar_texto(data.text)
+        tfidf = state.vectorizer.transform([texto_limpio])
+        pred = state.modelo_sentimientos.predict(tfidf)[0]
+        prob = state.modelo_sentimientos.predict_proba(tfidf)[0]
+        confianza = float(max(prob))
     except Exception as e:
-        raise HTTPException(status_code=422, detail=f"Error en predicción: {e}")
+        raise HTTPException(status_code=422, detail=f"Error en ML: {str(e)}")
 
-    # Mensaje Gemini
-    prompt = f"""
-    Actúa como un asistente juvenil, cercano y empático.
-    El usuario escribió: "{data.text}"
-    El modelo detectó un sentimiento: {prediccion}.
-    Genera una respuesta muy breve (máximo 2 frases) que sea coherente con lo que el usuario expresó.
-    Usa emojis.
-    """
-
+    # 4. Generación con Gemini AI
     try:
+        client = genai.Client(api_key=api_key)
+        
+        # Nuevo prompt integrado
+        prompt = f"""
+        Actúa como un asistente juvenil, cercano y empático.
+        El usuario escribió: "{data.text}"
+        El modelo detectó un sentimiento: {pred}.
+        Genera una respuesta muy breve (máximo 2 frases) que sea coherente con lo que el usuario expresó.
+        Usa emojis.
+        """
+        
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-2.0-flash", 
             contents=prompt
         )
-        mensaje_gemini = response.text.strip()
-    except Exception:
-        if prediccion == "positive":
-            mensaje_gemini = "¡Qué alegría leer eso! ✨ Muchas gracias por tu comentario."
-        else:
-            mensaje_gemini = "Lamento mucho esa experiencia. 😔 Ya estamos trabajando para mejorarlo."
-
+        mensaje = response.text.strip()
+    except Exception as e:
+        print(f"Error en Gemini: {e}")
+        mensaje = "¡Gracias por compartirlo! ❤️" if pred == "positive" else "Tranqui, aquí estoy para lo que necesites. 😔"
     return {
-        "sentimiento": prediccion,
-        "confianza": round(float(confianza), 4),
-        "mensaje_gemini": mensaje_gemini
+        "sentimiento": pred,
+        "confianza": round(confianza, 4),
+        "mensaje_gemini": mensaje
     }
